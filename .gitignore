@@ -1,4 +1,7 @@
 .env
-/env
-/logs
-/__pycache__
+env/
+logs/
+__pycache__/
+
+# Игнорировать все папки с расширением .log
+*.log/
