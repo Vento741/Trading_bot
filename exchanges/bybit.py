@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import time
 from typing import Dict, List, Optional
@@ -11,7 +12,7 @@ class BybitExchange(BaseExchange):
         
         # API endpoints для Unified Account
         self.base_url = 'https://api-testnet.bybit.com' if self.testnet else 'https://api.bybit.com'
-        self.ws_public_url = 'wss://stream-testnet.bybit.com/v5/public' if self.testnet else 'wss://stream.bybit.com/v5/public'
+        self.ws_public_url = 'wss://stream-testnet.bybit.com/v5/public/spot' if self.testnet else 'wss://stream.bybit.com/v5/public/spot'
         self.ws_private_url = 'wss://stream-testnet.bybit.com/v5/private' if self.testnet else 'wss://stream.bybit.com/v5/private'
         
         # Категория для Unified Account
@@ -46,9 +47,13 @@ class BybitExchange(BaseExchange):
         
     async def disconnect(self):
         """Закрыть соединение с биржей"""
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
+        if self.ws_public:
+            await self.ws_public.close()
+            self.ws_public = None
+        
+        if self.ws_private:
+            await self.ws_private.close()
+            self.ws_private = None
             
         await self._close_session()
         self.logger.info("Disconnected from Bybit")
@@ -57,23 +62,25 @@ class BybitExchange(BaseExchange):
         """Установка WebSocket соединений с повторными попытками"""
         while self.reconnect_attempts < self.max_reconnect_attempts:
             try:
-                # Public WebSocket
+                headers = {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Content-Type': 'application/json'
+                }
+                
+                # Подключение к публичному WebSocket
                 self.ws_public = await websockets.connect(
                     self.ws_public_url,
-                    ping_interval=None,  # Отключаем автоматический ping
-                    ping_timeout=None
+                    ping_interval=None,
+                    ping_timeout=None,
+                    extra_headers=headers,
+                    max_size=2**23  # 8MB
                 )
                 
-                # Private WebSocket (если нужен)
-                if self.api_key and self.api_secret:
-                    self.ws_private = await websockets.connect(
-                        self.ws_private_url,
-                        ping_interval=None,
-                        ping_timeout=None
-                    )
+                # Только для приватного WebSocket
+                if self.ws_private:
                     await self._ws_authenticate()
                 
-                self.reconnect_attempts = 0  # Сброс счетчика после успешного подключения
+                self.reconnect_attempts = 0
                 break
                 
             except Exception as e:
@@ -81,7 +88,7 @@ class BybitExchange(BaseExchange):
                 self.logger.error(f"WebSocket connection attempt {self.reconnect_attempts} failed: {str(e)}")
                 if self.reconnect_attempts >= self.max_reconnect_attempts:
                     raise
-                await asyncio.sleep(2 ** self.reconnect_attempts)  # Exponential backoff
+                await asyncio.sleep(2 ** self.reconnect_attempts)
         
     async def _ws_keepalive(self):
         """Поддержание WebSocket соединения"""
@@ -106,25 +113,55 @@ class BybitExchange(BaseExchange):
     async def subscribe_orderbook(self, symbol: str):
         """Подписка на обновления книги ордеров"""
         try:
-            channel = f"orderbook.25.{symbol}"
+            formatted_symbol = symbol.replace('-', '').upper()
             subscribe_message = {
                 "op": "subscribe",
                 "args": [
-                    {
-                        "category": self.category,
-                        "symbol": symbol,
-                        "channel": channel
-                    }
+                    f"orderbook.25.{formatted_symbol}"
                 ]
             }
+            
             if self.ws_public:
                 await self.ws_public.send(json.dumps(subscribe_message))
-                self.logger.info(f"Subscribed to orderbook for {symbol}")
+                self.logger.info(f"Subscribed to orderbook for {formatted_symbol}")
             else:
-                self.logger.warning("WebSocket not connected, orderbook updates will not be received")
+                self.logger.warning(f"WebSocket not connected, using REST API for {formatted_symbol}")
+                asyncio.create_task(self._rest_orderbook_updates(formatted_symbol))
+                
         except Exception as e:
             self.logger.error(f"Failed to subscribe to orderbook: {str(e)}")
-        
+            # Запускаем REST API обновления как fallback
+            asyncio.create_task(self._rest_orderbook_updates(symbol))
+                      
+    async def _rest_orderbook_updates(self, symbol: str):
+        """Получение обновлений книги ордеров через REST API"""
+        while True:
+            try:
+                endpoint = f"/v5/market/orderbook"
+                params = {
+                    "category": self.category,
+                    "symbol": symbol.replace('-', ''),
+                    "limit": 25
+                }
+                response = await self._make_request('GET', endpoint, params)
+                
+                if response and response.get('result'):
+                    data = response['result']
+                    orderbook_data = {
+                        'type': 'orderbook',
+                        'exchange': 'bybit',
+                        'symbol': symbol,
+                        'timestamp': int(time.time() * 1000),
+                        'bids': [[float(p), float(s)] for p, s in data.get('b', [])],
+                        'asks': [[float(p), float(s)] for p, s in data.get('a', [])]
+                    }
+                    await self._handle_message(orderbook_data)
+                    
+            except Exception as e:
+                self.logger.error(f"Error in REST orderbook update: {str(e)}")
+                
+            await asyncio.sleep(1)  # Обновление каждую секунду
+
     async def _ws_subscribe(self, channels: List[str]):
         """Подписка на WebSocket каналы для Unified Account"""
         subscribe_message = {
@@ -156,6 +193,46 @@ class BybitExchange(BaseExchange):
             except Exception as e:
                 self.logger.error(f"WebSocket message handler error: {str(e)}")
                 await asyncio.sleep(1)
+
+    async def _ws_authenticate(self):
+        """Аутентификация WebSocket соединения"""
+        try:
+            if not self.api_key or not self.api_secret:
+                return
+                
+            timestamp = int(time.time() * 1000)
+            param_str = f"{timestamp}GET/realtime"
+            signature = self._generate_signature(param_str)
+            
+            auth_message = {
+                "op": "auth",
+                "args": [
+                    self.api_key,
+                    timestamp,
+                    signature
+                ]
+            }
+            
+            await self.ws_private.send(json.dumps(auth_message))
+            response = await self.ws_private.recv()
+            auth_response = json.loads(response)
+            
+            if not auth_response.get('success'):
+                raise Exception("WebSocket authentication failed")
+                
+            self.logger.info("WebSocket authentication successful")
+            
+        except Exception as e:
+            self.logger.error(f"WebSocket authentication error: {str(e)}")
+            raise
+            
+    def _generate_signature(self, param_str: str) -> str:
+        """Генерация подписи для аутентификации"""
+        return hmac.new(
+            bytes(self.api_secret, encoding='utf8'),
+            bytes(param_str, encoding='utf-8'),
+            digestmod='sha256'
+        ).hexdigest()
 
     async def place_order(self, symbol: str, side: str, order_type: str,
                          size: float, price: Optional[float] = None) -> Dict:

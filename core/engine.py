@@ -54,12 +54,17 @@ class TradingEngine:
         """Инициализация подключений к биржам"""
         exchange_configs = self.config.get('exchanges', {})
         for exchange_name, exchange_config in exchange_configs.items():
-            try:
-                exchange_class = self.get_exchange_class(exchange_name)
-                self.exchanges[exchange_name] = exchange_class(exchange_config)
-                self.logger.info(f"Initialized exchange: {exchange_name}")
-            except Exception as e:
-                self.logger.error(f"Failed to initialize exchange {exchange_name}: {str(e)}")
+            # Проверяем, включена ли биржа
+            if exchange_config.get('enabled', True):
+                try:
+                    exchange_class = self.get_exchange_class(exchange_name)
+                    self.exchanges[exchange_name] = exchange_class(exchange_config)
+                    self.logger.info(f"Initialized exchange: {exchange_name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize exchange {exchange_name}: {str(e)}")
+                    # Если это основная биржа, прерываем запуск
+                    if exchange_name == self.config.get('trading', {}).get('primary_exchange'):
+                        raise
             
     def initialize_strategies(self):
         """Инициализация торговых стратегий"""

@@ -42,31 +42,39 @@ EXCHANGE_CONFIGS = {
         'api_key': os.getenv('BYBIT_API_KEY', ''),
         'api_secret': os.getenv('BYBIT_API_SECRET', ''),
         'testnet': os.getenv('BYBIT_TESTNET', 'True').lower() == 'true',
-        'category': 'spot',  # spot/linear для unified account
-        'unified': True,  # указываем что используем unified account
-        'ws_config': WEBSOCKET_CONFIG
+        'category': 'spot',
+        'enabled': True,  # Биржа активна
+        'ws_config': {
+            'ping_interval': 20,
+            'reconnect_attempts': 5,
+            'reconnect_delay': 2,
+            'connection_timeout': 10
+        }
     },
     'okx': {
         'api_key': os.getenv('OKX_API_KEY', ''),
         'api_secret': os.getenv('OKX_API_SECRET', ''),
         'passphrase': os.getenv('OKX_PASSPHRASE', ''),
         'testnet': os.getenv('OKX_TESTNET', 'True').lower() == 'true',
-        'ws_config': WEBSOCKET_CONFIG
+        'enabled': False,  # Биржа отключена
+        'ws_config': {
+            'ping_interval': 20,
+            'reconnect_attempts': 5,
+            'reconnect_delay': 2,
+            'connection_timeout': 10
+        }
     }
 }
 
-# Торговые параметры
+# Торговые параметры (оставляем только пары для Bybit)
 TRADING_CONFIG = {
-    'pairs': ['BTC-USDT', 'ETH-USDT', 'BTC-BUSD', 'ETH-BUSD'],
-    'pair_mappings': [
-        ('BTC-USDT', 'BTC-BUSD'),
-        ('ETH-USDT', 'ETH-BUSD')
-    ],
+    'pairs': ['BTCUSDT', 'ETHUSDT'],  # Формат пар для Bybit
     'timeframes': ['1m', '5m', '15m', '1h', '4h'],
     'default_leverage': 1,
     'position_size_pct': 0.03,
     'max_positions': 5,
-    'max_positions_per_symbol': 2
+    'max_positions_per_symbol': 2,
+    'primary_exchange': 'bybit'  # Указываем основную биржу
 }
 
 # Настройки риск-менеджмента
