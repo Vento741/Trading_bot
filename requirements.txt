@@ -1,0 +1,45 @@
+# Базовые зависимости
+setuptools>=65.5.1
+wheel>=0.40.0
+pip>=23.0.1
+
+# Системные библиотеки
+python-dotenv==1.0.0
+asyncio==3.4.3
+aiohttp==3.9.1
+websockets==12.0
+
+# Научные вычисления и анализ данных
+numpy>=1.24.3,<2.0.0
+pandas>=2.1.3
+scipy>=1.11.3
+matplotlib>=3.8.2
+
+# Работа с базой данных
+asyncpg==0.29.0
+sqlalchemy>=2.0.23
+alembic>=1.12.1
+redis>=5.0.0
+
+# Мониторинг и логирование
+prometheus-client==0.19.0
+python-telegram-bot==20.7
+
+# Оптимизация
+optuna>=3.4.0
+
+# Тестирование
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+pytest-cov>=4.1.0
+
+# Форматирование и линтинг
+black>=23.11.0
+flake8>=6.1.0
+isort>=5.12.0
+
+# Прочее
+pytz>=2023.3
+ujson>=5.8.0
+cryptography>=41.0.5
+pydantic>=2.5.2
