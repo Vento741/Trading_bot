@@ -1,6 +1,6 @@
 from typing import Dict, Optional
 import time
-from base_strategy import BaseStrategy, Position
+from .base_strategy import BaseStrategy, Position
 
 class OrderBookImbalanceStrategy(BaseStrategy):
     def __init__(self, symbols: list, **kwargs):

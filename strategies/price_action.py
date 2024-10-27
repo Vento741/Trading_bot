@@ -1,7 +1,7 @@
 from typing import Dict, Optional, List
 import time
 import numpy as np
-from base_strategy import BaseStrategy, Position
+from .base_strategy import BaseStrategy, Position
 
 class PriceActionStrategy(BaseStrategy):
     def __init__(self, symbols: list, **kwargs):

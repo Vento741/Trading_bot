@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any
 from dotenv import load_dotenv
+# from config.settings import WEBSOCKET_CONFIG
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -20,6 +21,14 @@ DATABASE_CONFIG = {
     'max_size': 20
 }
 
+# Настройки WebSocket
+WEBSOCKET_CONFIG = {
+    'ping_interval': 20,
+    'ping_timeout': 5,
+    'reconnect_delay': 2,
+    'max_reconnect_attempts': 10
+}
+
 # Настройки Redis
 REDIS_CONFIG = {
     'host': os.getenv('REDIS_HOST', 'localhost'),
@@ -34,13 +43,15 @@ EXCHANGE_CONFIGS = {
         'api_secret': os.getenv('BYBIT_API_SECRET', ''),
         'testnet': os.getenv('BYBIT_TESTNET', 'True').lower() == 'true',
         'category': 'spot',  # spot/linear для unified account
-        'unified': True  # указываем что используем unified account
+        'unified': True,  # указываем что используем unified account
+        'ws_config': WEBSOCKET_CONFIG
     },
     'okx': {
         'api_key': os.getenv('OKX_API_KEY', ''),
         'api_secret': os.getenv('OKX_API_SECRET', ''),
         'passphrase': os.getenv('OKX_PASSPHRASE', ''),
-        'testnet': os.getenv('OKX_TESTNET', 'True').lower() == 'true'
+        'testnet': os.getenv('OKX_TESTNET', 'True').lower() == 'true',
+        'ws_config': WEBSOCKET_CONFIG
     }
 }
 
@@ -124,13 +135,6 @@ MONITORING_CONFIG = {
     'alert_telegram_chat_id': os.getenv('TELEGRAM_CHAT_ID', '')
 }
 
-# Настройки WebSocket
-WEBSOCKET_CONFIG = {
-    'ping_interval': 30,
-    'ping_timeout': 10,
-    'reconnect_delay': 5,
-    'max_reconnect_attempts': 3
-}
 
 # Настройки исполнения ордеров
 EXECUTION_CONFIG = {

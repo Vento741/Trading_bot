@@ -1,7 +1,7 @@
 from typing import Dict, Optional, List, Tuple
 import numpy as np
 import time
-from base_strategy import BaseStrategy, Position
+from .base_strategy import BaseStrategy, Position
 
 class ArbitrageStrategy(BaseStrategy):
     def __init__(self, symbol_pairs: List[Tuple[str, str]], **kwargs):

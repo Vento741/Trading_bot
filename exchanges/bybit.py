@@ -11,15 +11,19 @@ class BybitExchange(BaseExchange):
         
         # API endpoints для Unified Account
         self.base_url = 'https://api-testnet.bybit.com' if self.testnet else 'https://api.bybit.com'
-        self.ws_url = 'wss://stream-testnet.bybit.com/v5' if self.testnet else 'wss://stream.bybit.com/v5'
+        self.ws_public_url = 'wss://stream-testnet.bybit.com/v5/public' if self.testnet else 'wss://stream.bybit.com/v5/public'
+        self.ws_private_url = 'wss://stream-testnet.bybit.com/v5/private' if self.testnet else 'wss://stream.bybit.com/v5/private'
         
         # Категория для Unified Account
-        self.category = 'spot'  # или 'linear' для фьючерсов
-
-        # Local cache
-        self.orderbook_cache = {}
-        self.position_cache = {}
-        self.order_cache = {}
+        self.category = config.get('category', 'spot')
+        
+        # Добавляем переменные для отслеживания состояния подключения
+        self.ws_public = None
+        self.ws_private = None
+        self.last_ping_time = 0
+        self.ping_interval = 20  # seconds
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
         
     def _get_url(self, endpoint: str) -> str:
         return f"{self.base_url}{endpoint}"
@@ -27,13 +31,18 @@ class BybitExchange(BaseExchange):
     async def connect(self):
         """Установить соединение с биржей"""
         await self._init_session()
-        await self._ws_connect()
         
-        # Start WebSocket handlers
-        asyncio.create_task(self._ws_message_handler())
-        asyncio.create_task(self._ws_keep_alive())
-        
-        self.logger.info("Connected to Bybit")
+        # Инициализация WebSocket подключений
+        try:
+            await self._ws_connect()
+            # Запуск обработчиков в отдельных задачах
+            asyncio.create_task(self._ws_keepalive())
+            asyncio.create_task(self._ws_message_handler())
+            self.logger.info("Connected to Bybit WebSocket")
+        except Exception as e:
+            self.logger.warning(f"WebSocket connection failed: {str(e)}. Trading will continue with REST API.")
+            # Продолжаем работу даже без WebSocket
+            pass
         
     async def disconnect(self):
         """Закрыть соединение с биржей"""
@@ -45,13 +54,76 @@ class BybitExchange(BaseExchange):
         self.logger.info("Disconnected from Bybit")
         
     async def _ws_connect(self):
-        """Установить WebSocket соединение"""
-        self.ws = await websockets.connect(self.ws_url)
+        """Установка WebSocket соединений с повторными попытками"""
+        while self.reconnect_attempts < self.max_reconnect_attempts:
+            try:
+                # Public WebSocket
+                self.ws_public = await websockets.connect(
+                    self.ws_public_url,
+                    ping_interval=None,  # Отключаем автоматический ping
+                    ping_timeout=None
+                )
+                
+                # Private WebSocket (если нужен)
+                if self.api_key and self.api_secret:
+                    self.ws_private = await websockets.connect(
+                        self.ws_private_url,
+                        ping_interval=None,
+                        ping_timeout=None
+                    )
+                    await self._ws_authenticate()
+                
+                self.reconnect_attempts = 0  # Сброс счетчика после успешного подключения
+                break
+                
+            except Exception as e:
+                self.reconnect_attempts += 1
+                self.logger.error(f"WebSocket connection attempt {self.reconnect_attempts} failed: {str(e)}")
+                if self.reconnect_attempts >= self.max_reconnect_attempts:
+                    raise
+                await asyncio.sleep(2 ** self.reconnect_attempts)  # Exponential backoff
         
+    async def _ws_keepalive(self):
+        """Поддержание WebSocket соединения"""
+        while True:
+            try:
+                current_time = time.time()
+                if current_time - self.last_ping_time > self.ping_interval:
+                    if self.ws_public:
+                        await self.ws_public.ping()
+                    if self.ws_private:
+                        await self.ws_private.ping()
+                    self.last_ping_time = current_time
+                    
+                await asyncio.sleep(1)
+            except Exception as e:
+                self.logger.error(f"WebSocket keepalive error: {str(e)}")
+                try:
+                    await self._ws_connect()
+                except:
+                    await asyncio.sleep(5)
+
     async def subscribe_orderbook(self, symbol: str):
-        """Подписаться на обновления книги ордеров"""
-        channel = f"orderbook.25.{symbol}"
-        await self._ws_subscribe([channel])
+        """Подписка на обновления книги ордеров"""
+        try:
+            channel = f"orderbook.25.{symbol}"
+            subscribe_message = {
+                "op": "subscribe",
+                "args": [
+                    {
+                        "category": self.category,
+                        "symbol": symbol,
+                        "channel": channel
+                    }
+                ]
+            }
+            if self.ws_public:
+                await self.ws_public.send(json.dumps(subscribe_message))
+                self.logger.info(f"Subscribed to orderbook for {symbol}")
+            else:
+                self.logger.warning("WebSocket not connected, orderbook updates will not be received")
+        except Exception as e:
+            self.logger.error(f"Failed to subscribe to orderbook: {str(e)}")
         
     async def _ws_subscribe(self, channels: List[str]):
         """Подписка на WebSocket каналы для Unified Account"""
@@ -67,6 +139,24 @@ class BybitExchange(BaseExchange):
         }
         await self.ws.send(json.dumps(subscribe_message))
         
+    async def _ws_message_handler(self):
+        """Обработка WebSocket сообщений"""
+        while True:
+            try:
+                if self.ws_public:
+                    message = await self.ws_public.recv()
+                    data = json.loads(message)
+                    await self._handle_message(data)
+            except websockets.ConnectionClosed:
+                self.logger.warning("WebSocket connection closed")
+                try:
+                    await self._ws_connect()
+                except:
+                    await asyncio.sleep(5)
+            except Exception as e:
+                self.logger.error(f"WebSocket message handler error: {str(e)}")
+                await asyncio.sleep(1)
+
     async def place_order(self, symbol: str, side: str, order_type: str,
                          size: float, price: Optional[float] = None) -> Dict:
         """Размещение ордера через Unified Trading Account API"""

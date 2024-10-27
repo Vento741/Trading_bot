@@ -1,11 +1,9 @@
 from typing import Dict, List, Optional, Type
 import asyncio
 import time
-from datetime import datetime
-import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
-import logging
 
 from strategies.base_strategy import BaseStrategy
 from strategies.combined.impulse_imbalance import ImpulseImbalanceStrategy
@@ -22,69 +20,83 @@ class TradingEngine:
         self.config = config
         self.logger = setup_logger('trading_engine')
         
-        # Initialize components
-        self.risk_manager = RiskManager(config['risk'])
+        # Инициализация компонентов
+        self.risk_manager = RiskManager(config.get('risk', {}))
         self.metrics_collector = MetricsCollector()
         
-        # Initialize exchanges
-        self.exchanges: Dict[str, BaseExchange] = {}
+        # Инициализация бирж
+        self.exchanges = {}
         self.initialize_exchanges()
         
-        # Initialize strategies
-        self.strategies: Dict[str, BaseStrategy] = {}
+        # Инициализация стратегий
+        self.strategies = {}
         self.initialize_strategies()
         
-        # Trading state
+        # Торговое состояние
         self.is_running = False
-        self.positions: Dict[str, Position] = {}
-        self.pending_orders: Dict[str, Dict] = {}
+        self.positions = {}
+        self.pending_orders = {}
         
-        # Queues for async processing
+        # Очереди для асинхронной обработки
         self.market_data_queue = Queue()
         self.order_queue = Queue()
         self.signal_queue = Queue()
         
-        # Performance tracking
+        # Отслеживание производительности
         self.start_time = None
         self.total_trades = 0
         self.profitable_trades = 0
         
-        # Thread pool for parallel processing
+        # Thread pool для параллельной обработки
         self.executor = ThreadPoolExecutor(max_workers=4)
         
     def initialize_exchanges(self):
-        """Initialize connection to exchanges"""
-        for exchange_config in self.config['exchanges']:
-            exchange_name = exchange_config['name']
-            exchange_class = self.get_exchange_class(exchange_name)
-            self.exchanges[exchange_name] = exchange_class(exchange_config)
+        """Инициализация подключений к биржам"""
+        exchange_configs = self.config.get('exchanges', {})
+        for exchange_name, exchange_config in exchange_configs.items():
+            try:
+                exchange_class = self.get_exchange_class(exchange_name)
+                self.exchanges[exchange_name] = exchange_class(exchange_config)
+                self.logger.info(f"Initialized exchange: {exchange_name}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize exchange {exchange_name}: {str(e)}")
             
     def initialize_strategies(self):
-        """Initialize trading strategies"""
-        # Get trading pairs from config
-        pairs = self.config['trading']['pairs']
+        """Инициализация торговых стратегий"""
+        trading_config = self.config.get('trading', {})
+        strategy_configs = self.config.get('strategies', {})
         
-        # Initialize combined strategies
-        self.strategies['impulse_imbalance'] = ImpulseImbalanceStrategy(
-            symbols=pairs,
-            **self.config['strategies']['impulse_imbalance']
-        )
-        self.strategies['arbitrage_volume'] = ArbitrageVolumeStrategy(
-            symbol_pairs=self.config['trading']['pair_mappings'],
-            **self.config['strategies']['arbitrage_volume']
-        )
+        # Получаем торговые пары из конфигурации
+        pairs = trading_config.get('pairs', [])
         
+        for strategy_name, strategy_config in strategy_configs.items():
+            try:
+                # Создаем экземпляр стратегии с конфигурацией
+                if strategy_name == 'ImpulseImbalance':
+                    self.strategies[strategy_name] = ImpulseImbalanceStrategy(
+                        symbols=pairs,
+                        config=strategy_config
+                    )
+                elif strategy_name == 'ArbitrageVolume':
+                    self.strategies[strategy_name] = ArbitrageVolumeStrategy(
+                        symbol_pairs=trading_config.get('pair_mappings', []),
+                        config=strategy_config
+                    )
+                self.logger.info(f"Initialized strategy: {strategy_name}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize strategy {strategy_name}: {str(e)}")
+                
     async def start(self):
-        """Start the trading engine"""
+        """Запуск торгового движка"""
         self.logger.info("Starting trading engine...")
         self.is_running = True
         self.start_time = time.time()
         
         try:
-            # Start exchange connections
+            # Запуск подключений к биржам
             await self.connect_exchanges()
             
-            # Start processing loops
+            # Запуск обработчиков
             await asyncio.gather(
                 self.market_data_loop(),
                 self.signal_processing_loop(),
@@ -96,21 +108,21 @@ class TradingEngine:
             await self.stop()
             
     async def stop(self):
-        """Stop the trading engine"""
+        """Остановка торгового движка"""
         self.logger.info("Stopping trading engine...")
         self.is_running = False
         
-        # Close all positions
+        # Закрытие всех позиций
         await self.close_all_positions()
         
-        # Disconnect from exchanges
+        # Отключение от бирж
         await self.disconnect_exchanges()
         
-        # Shutdown thread pool
+        # Остановка thread pool
         self.executor.shutdown(wait=True)
         
     async def connect_exchanges(self):
-        """Connect to all exchanges"""
+        """Подключение ко всем биржам"""
         for exchange_name, exchange in self.exchanges.items():
             try:
                 await exchange.connect()
@@ -120,7 +132,7 @@ class TradingEngine:
                 raise
                 
     async def disconnect_exchanges(self):
-        """Disconnect from all exchanges"""
+        """Отключение от всех бирж"""
         for exchange_name, exchange in self.exchanges.items():
             try:
                 await exchange.disconnect()
@@ -129,36 +141,73 @@ class TradingEngine:
                 self.logger.error(f"Error disconnecting from {exchange_name}: {str(e)}")
                 
     async def market_data_loop(self):
-        """Process market data updates"""
+        """Обработка рыночных данных"""
         while self.is_running:
             try:
                 while not self.market_data_queue.empty():
                     data = self.market_data_queue.get()
                     await self.process_market_data(data)
                     
-                await asyncio.sleep(0.001)  # Prevent CPU overload
+                await asyncio.sleep(0.001)
             except Exception as e:
                 self.logger.error(f"Error in market data loop: {str(e)}")
                 
     async def process_market_data(self, data: Dict):
-        """Process incoming market data"""
-        exchange_name = data['exchange']
-        symbol = data['symbol']
+        """Обработка входящих рыночных данных"""
+        exchange_name = data.get('exchange')
+        symbol = data.get('symbol')
         
-        # Update order book
-        if data['type'] == 'orderbook':
+        if not exchange_name or not symbol:
+            return
+            
+        # Обновление книги ордеров
+        if data.get('type') == 'orderbook':
             orderbook = OrderBook(
-                bids=data['bids'],
-                asks=data['asks'],
-                timestamp=data['timestamp']
+                symbol=symbol,
+                timestamp=data.get('timestamp', time.time()),
+                bids=data.get('bids', []),
+                asks=data.get('asks', [])
             )
             
-            # Update strategies with new orderbook
+            # Обновление стратегий
             for strategy in self.strategies.values():
-                strategy.update_orderbook(symbol, orderbook.bids, orderbook.asks)
+                strategy.update_orderbook(symbol, orderbook)
                 
-            # Generate trading signals
+            # Генерация сигналов
             await self.generate_signals(symbol)
+            
+    def get_exchange_class(self, exchange_name: str):
+        """Получение класса биржи по имени"""
+        if exchange_name.lower() == 'bybit':
+            from exchanges.bybit import BybitExchange
+            return BybitExchange
+        elif exchange_name.lower() == 'okx':
+            from exchanges.okx import OKXExchange
+            return OKXExchange
+        else:
+            raise ValueError(f"Unsupported exchange: {exchange_name}")
+            
+    async def close_all_positions(self):
+        """Закрытие всех открытых позиций"""
+        for position in list(self.positions.values()):
+            try:
+                await self.close_position(position.symbol, 'system_shutdown')
+            except Exception as e:
+                self.logger.error(f"Error closing position {position.symbol}: {str(e)}")
+                
+    def get_statistics(self) -> Dict:
+        """Получение торговой статистики"""
+        return {
+            'total_trades': self.total_trades,
+            'profitable_trades': self.profitable_trades,
+            'win_rate': self.profitable_trades / self.total_trades if self.total_trades > 0 else 0,
+            'running_time': time.time() - self.start_time if self.start_time else 0,
+            'open_positions': len(self.positions),
+            'risk_metrics': self.risk_manager.calculate_risk_metrics(),
+            'performance_metrics': self.metrics_collector.get_metrics()
+        }
+
+    # [Остальные методы остаются без изменений]
             
     async def signal_processing_loop(self):
         """Process trading signals"""
@@ -329,19 +378,3 @@ class TradingEngine:
         else:
             raise ValueError(f"Unsupported exchange: {exchange_name}")
             
-    async def close_all_positions(self):
-        """Close all open positions"""
-        for position in list(self.positions.values()):
-            await self.close_position(position)
-            
-    def get_statistics(self) -> Dict:
-        """Get trading statistics"""
-        return {
-            'total_trades': self.total_trades,
-            'profitable_trades': self.profitable_trades,
-            'win_rate': self.profitable_trades / self.total_trades if self.total_trades > 0 else 0,
-            'running_time': time.time() - self.start_time if self.start_time else 0,
-            'open_positions': len(self.positions),
-            'risk_metrics': self.risk_manager.calculate_risk_metrics(),
-            'performance_metrics': self.metrics_collector.get_metrics()
-        }
